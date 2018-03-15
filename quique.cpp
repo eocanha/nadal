@@ -234,10 +234,15 @@ int main(int argc, char** argv) {
 
   loop = g_main_loop_new (NULL, FALSE);
 
+#if defined(ALICIA_DESKTOP)
+  demuxFile(audioFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-8c.mp4");
+  demuxFile(videoFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-86.mp4");
+#elif defined(QUIQUE_BOARD)
   demuxFile(audioFrames, "/root/append-0.mp4");
   demuxFile(videoFrames, "/root/append-1.mp4");
-//  demuxFile(audioFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-8c.mp4");
-//  demuxFile(videoFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-86.mp4");
+#else
+#error "Please specify environment in order to find the correct video files."
+#endif
 
   GError *error = nullptr;
   GstElement *pipeline = gst_parse_launch("playsink name=playsink "
