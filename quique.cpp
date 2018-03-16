@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
 
   GstSegment segment;
   gst_segment_init(&segment, GST_FORMAT_TIME);
-  segment.start = max(samplePts(videoFrames[0]), samplePts(audioFrames[0]));
+  segment.start = 0;
   g_printerr("initial seek to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(segment.start));
   gboolean seekSuccess;
   // Initial seek must be sent to the elements, not the pipeline, because events (including SEEK) don't flow in READY state.
@@ -347,15 +347,15 @@ int main(int argc, char** argv) {
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline-playing");
   g_assert(ret != GST_STATE_CHANGE_FAILURE);
 
-  g_printerr("appends 1 (for initial seek)\n");
-  for (auto sample : samplesStartingAt(videoFrames, segment.start)) {
+  g_printerr("appends 1 (bad frames)\n");
+  for (auto sample : samplesBetweenInclusive(videoFrames, "1:00:00.033333333", "1:00:21.333333333")) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
   }
-  for (auto sample : samplesStartingAt(audioFrames, segment.start)) {
+  for (auto sample : samplesBetweenInclusive(audioFrames, "0:59:50.013968253", "1:00:18.946031746")) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
   }
 
-  sleep(2);
+  sleep(1);
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "playing");
 
   // Seek
@@ -371,7 +371,7 @@ int main(int argc, char** argv) {
 
   g_printerr("paused reached, now seeking\n");
   
-  segment.start = 3615033333333;
+  segment.start = parseUnsignedTime("1:00:00.000000000");
 
   for (int i=0; i<5; i++) {
     seekSuccess = gst_element_seek(pipeline, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
@@ -383,14 +383,18 @@ int main(int argc, char** argv) {
     g_assert(ret != GST_STATE_CHANGE_FAILURE);
 
     g_printerr("appends %d\n", i+2);
-    for (auto sample : samplesStartingAt(videoFrames, segment.start)) {
+    auto videoFramesSeek = samplesStartingAt(videoFrames, segment.start);
+    g_assert(samplePtsString(videoFramesSeek[0]) == "1:00:00.033333333");
+    for (auto sample : videoFramesSeek) {
       gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
     }
+    auto audioFramesSeek = samplesStartingAt(audioFrames, segment.start);
+    g_assert(samplePtsString(audioFramesSeek[0]) == "0:59:59.998548752");
     for (auto sample : samplesStartingAt(audioFrames, segment.start)) {
       gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
     }
 
-    sleep(8);
+    sleep(40);
   }
 
   return 0;
