@@ -266,8 +266,8 @@ int main(int argc, char** argv) {
   loop = g_main_loop_new (NULL, FALSE);
 
 #if defined(ALICIA_DESKTOP)
-  demuxFile(audioFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-8c.mp4");
-  demuxFile(videoFrames, "/home/ntrrgc/Apps/js_mse_eme/media/car-20120827-86.mp4");
+  demuxFile(audioFrames, "/home/ntrrgc/Downloads/append-data/audio-full.mp4");
+  demuxFile(videoFrames, "/home/ntrrgc/Downloads/append-data/video-full.mp4");
 #elif defined(QUIQUE_BOARD)
   demuxFile(audioFrames, "/root/append-0.mp4");
   demuxFile(videoFrames, "/root/append-1.mp4");
