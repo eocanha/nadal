@@ -291,13 +291,13 @@ int main(int argc, char** argv) {
 
   GstAppSrcCallbacks callbacks;
   callbacks.need_data = [](GstAppSrc *src, guint length, gpointer user_data) {
-    //g_printerr("need-data %p\n", src);
+    //g_printerr("need-data %p\n", (void*) src);
   };
   callbacks.enough_data = [](GstAppSrc *src, gpointer user_data) {
-    // g_printerr("enough-data %p\n", src);
+    // g_printerr("enough-data %p\n", (void*) src);
   };
   callbacks.seek_data = [](GstAppSrc *src, guint64 offset, gpointer user_data) -> gboolean {
-    g_printerr("seek-data %p\n", src);
+    g_printerr("seek-data %p\n", (void*) src);
     return TRUE;
   };
 
