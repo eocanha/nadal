@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
     // g_printerr("enough-data %p\n", (void*) src);
   };
   callbacks.seek_data = [](GstAppSrc *src, guint64 offset, gpointer user_data) -> gboolean {
-    g_printerr("seek-data %p\n", (void*) src);
+    g_printerr("seek-data %p offset=%" GST_TIME_FORMAT "\n", (void*) src, GST_TIME_ARGS(offset));
     return TRUE;
   };
 
@@ -323,9 +323,15 @@ int main(int argc, char** argv) {
   GstSegment segment;
   gst_segment_init(&segment, GST_FORMAT_TIME);
   segment.start = max(samplePts(videoFrames[0]), samplePts(audioFrames[0]));
-  g_printerr("seek\n");
+  g_printerr("initial seek to %" GST_TIME_FORMAT "\n", GST_TIME_ARGS(segment.start));
   gboolean seekSuccess;
-  seekSuccess = gst_element_seek(pipeline, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
+  // Initial seek must be sent to the elements, not the pipeline, because events (including SEEK) don't flow in READY state.
+  // For the same reason, we should not use GST_SEEK_FLAG_FLUSH: In READY state not even the FLUSH can flow. There are no
+  // frames in the pipeline either.
+  seekSuccess = gst_element_seek(appsrcaudio, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_NONE,
+                                 GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
+  g_assert(seekSuccess);
+  seekSuccess = gst_element_seek(appsrcvideo, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_NONE,
                                  GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
   g_assert(seekSuccess);
 
