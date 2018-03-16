@@ -355,7 +355,7 @@ int main(int argc, char** argv) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
   }
 
-  sleep(1);
+//  sleep(1);
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "playing");
 
   // Seek
