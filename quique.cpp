@@ -229,6 +229,34 @@ GstPadProbeReturn change_group_id_probe (GstPad *pad, GstPadProbeInfo *info, gpo
   return GST_PAD_PROBE_OK;
 }
 
+guint64 parseUnsignedTime(const char *str)
+{
+  int hours, minutes, seconds;
+  long ns;
+  int count_parsed_items = sscanf(str, "%d:%d:%d.%ld", &hours, &minutes, &seconds, &ns);
+  g_assert(count_parsed_items == 4);
+  return ns + GST_SECOND * (seconds + 60 * minutes + 3600 * hours);
+}
+
+vector<GstSample*> samplesBetweenInclusive(const vector<GstSample*>& allSamples, const char *firstSamplePTS, const char *lastSamplePTS) {
+  vector<GstSample*> ret;
+  guint64 firstSamplePTSns = parseUnsignedTime(firstSamplePTS);
+  guint64 lastSamplePTSns = parseUnsignedTime(lastSamplePTS);
+
+  auto iteratorFirst = std::find_if(allSamples.begin(), allSamples.end(), [firstSamplePTSns](GstSample* s) {
+      return gst_sample_get_buffer(s)->pts == firstSamplePTSns;
+  });
+  g_assert(iteratorFirst != allSamples.end());
+
+  auto iteratorLast = std::find_if(allSamples.begin(), allSamples.end(), [lastSamplePTSns](GstSample* s) {
+      return gst_sample_get_buffer(s)->pts == lastSamplePTSns;
+  });
+  g_assert(iteratorFirst != allSamples.end());
+
+  ret.insert(ret.end(), iteratorFirst, iteratorLast + 1);
+  return ret;
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   const char* tags[] = {nullptr};
