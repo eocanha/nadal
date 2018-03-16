@@ -221,6 +221,9 @@ GstPadProbeReturn change_group_id_probe (GstPad *pad, GstPadProbeInfo *info, gpo
   if (event->type == GST_EVENT_STREAM_START) {
     GstEvent *new_event = gst_event_copy(event);
     gst_event_set_group_id(new_event, global_group_id);
+    guint old_group_id = -1;
+    gst_event_parse_group_id(event, &old_group_id);
+    g_printerr("Changing group_id from %u to %u\n", old_group_id, global_group_id);
     gst_event_replace((GstEvent**)&info->data, new_event);
   }
   return GST_PAD_PROBE_OK;
@@ -245,7 +248,7 @@ int main(int argc, char** argv) {
 #endif
 
   GError *error = nullptr;
-  GstElement *pipeline = gst_parse_launch("playsink name=playsink "
+  GstElement *pipeline = gst_parse_launch("playsink name=playsink flags=audio+video+native-audio+native-video "
                                           "appsrc name=appsrcvideo ! queue name=myvideoqueue ! decodebin ! playsink.video_sink "
                                           "appsrc name=appsrcaudio ! queue name=myaudioqueue ! decodebin ! playsink.audio_sink ", &error);
   g_assert_no_error(error);
@@ -294,10 +297,7 @@ int main(int argc, char** argv) {
   segment.start = max(samplePts(videoFrames[0]), samplePts(audioFrames[0]));
   g_printerr("seek\n");
   gboolean seekSuccess;
-  seekSuccess = gst_element_seek(appsrcvideo, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_NONE,
-                                 GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
-  g_assert(seekSuccess);
-  seekSuccess = gst_element_seek(appsrcaudio, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_NONE,
+  seekSuccess = gst_element_seek(pipeline, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
                                  GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
   g_assert(seekSuccess);
 
@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pipeline-playing");
   g_assert(ret != GST_STATE_CHANGE_FAILURE);
 
-  g_printerr("first appends\n");
+  g_printerr("appends 1 (for initial seek)\n");
   for (auto sample : samplesStartingAt(videoFrames, segment.start)) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
   }
@@ -327,8 +327,10 @@ int main(int argc, char** argv) {
   // Seek
   ret = gst_element_set_state(pipeline, GST_STATE_PAUSED);
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "pause-before-seek");
-  
   g_assert(ret != GST_STATE_CHANGE_FAILURE);
+
+  g_printerr("paused\n");
+
   GstState reachedState;
   gst_element_get_state(pipeline, &reachedState, NULL, GST_CLOCK_TIME_NONE);
   g_assert(reachedState == GST_STATE_PAUSED);
@@ -336,26 +338,26 @@ int main(int argc, char** argv) {
   g_printerr("paused reached, now seeking\n");
   
   segment.start = 3615033333333;
-  seekSuccess = gst_element_seek(appsrcvideo, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
-                                 GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
-  g_assert(seekSuccess);
-  seekSuccess = gst_element_seek(appsrcaudio, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
-                                 GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
-  g_assert(seekSuccess);
 
-  ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
-  GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "play-after-seek");
-  g_assert(ret != GST_STATE_CHANGE_FAILURE);
+  for (int i=0; i<5; i++) {
+    seekSuccess = gst_element_seek(pipeline, 1, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH,
+                                   GST_SEEK_TYPE_SET, segment.start, GST_SEEK_TYPE_SET, GST_CLOCK_TIME_NONE);
+    g_assert(seekSuccess);
 
-  g_printerr("second appends\n");
-  for (auto sample : samplesStartingAt(videoFrames, segment.start)) {
-    gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
+    ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "play-after-seek");
+    g_assert(ret != GST_STATE_CHANGE_FAILURE);
+
+    g_printerr("appends %d\n", i+2);
+    for (auto sample : samplesStartingAt(videoFrames, segment.start)) {
+      gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
+    }
+    for (auto sample : samplesStartingAt(audioFrames, segment.start)) {
+      gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
+    }
+
+    sleep(8);
   }
-  for (auto sample : samplesStartingAt(audioFrames, segment.start)) {
-    gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
-  }
-
-  sleep(1000000);
 
   return 0;
 }
