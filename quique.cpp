@@ -397,7 +397,11 @@ int main(int argc, char** argv) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
   }
 
-  // FIXME stalls on desktop when the following sleep is removed
+  GstState reachedState;
+  // Wait for PLAYING transition to complete in order to avoid GStreamer bug if a PAUSED transition is requested.
+  gst_element_get_state(pipeline, &reachedState, NULL, GST_CLOCK_TIME_NONE);
+  g_assert(reachedState == GST_STATE_PLAYING);
+
   sleep(1);
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "playing");
 
@@ -408,7 +412,6 @@ int main(int argc, char** argv) {
 
   g_printerr("paused\n");
 
-  GstState reachedState;
   gst_element_get_state(pipeline, &reachedState, NULL, GST_CLOCK_TIME_NONE);
   g_assert(reachedState == GST_STATE_PAUSED);
 
