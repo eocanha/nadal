@@ -13,30 +13,31 @@
 #include <mutex>
 #include <iostream>
 #include <algorithm>
+#include <functional>
 #include <string.h>
 using namespace std;
 
-struct EndOfAppendMeta {
-  GstMeta base;
+class Barrier {
+    int m_counter;
+    condition_variable m_condition;
+    mutex m_mutex;
 
-  static gboolean init(GstMeta*, void*, GstBuffer*)
-  {
-    return TRUE;
-  }
+public:
+    void notify() {
+        lock_guard<mutex> lockGuard(m_mutex);
+        assert(m_counter == 0);
+        m_counter++;
+        m_condition.notify_all();
+    }
 
-  static gboolean transform(GstBuffer*, GstMeta*, GstBuffer*, GQuark, void*)
-  {
-    assert(0);
-  }
+    void waitAndConsume() {
+        unique_lock<mutex> uniqueLock(m_mutex);
+        m_condition.wait(uniqueLock, [this] { return m_counter > 0; });
 
-  static void free(GstMeta*, GstBuffer*)
-  {
-    // No pointers to free.
-  }
+        assert(m_counter == 1);
+        m_counter--;
+    }
 };
-
-static GType WEBKIT_END_OF_APPEND_META_API_TYPE = 0;
-static const GstMetaInfo* webKitEndOfAppendMetaInfo = nullptr;
 
 static void
 print_error_message (GstMessage * msg)
@@ -150,8 +151,93 @@ vector<GstSample*> samplesStartingAt(const vector<GstSample*>& samples, guint64 
   throw runtime_error("no frames in range");
 }
 
+void wait_for_pad (GstElement *element, string pad_name, function<void(GstElement* element, GstPad* pad)> callback)
+{
+  GstPad* pad = gst_element_get_static_pad(element, pad_name.c_str());
+  if (pad) {
+    callback(element, pad);
+  } else {
+    struct _pad_added_closure {
+      string pad_name;
+      function<void(GstElement* element, GstPad* pad)> callback;
+    };
+
+    _pad_added_closure *closure = new _pad_added_closure;
+    closure->pad_name = pad_name;
+
+    g_signal_connect(element, "pad-added", G_CALLBACK(+[](GstElement *element, GstPad *new_pad, gpointer user_data) -> void {
+      _pad_added_closure *closure = (_pad_added_closure*) user_data;
+      if (closure->pad_name == gst_pad_get_name(new_pad)) {
+        closure->callback(element, new_pad);
+        g_signal_handlers_disconnect_by_data(element, closure);
+        delete closure;
+      }
+    }), closure);
+  }
+}
+
+void wait_for_element (GstBin* bin, string element_name, function<void(GstBin* bin, GstElement* element)> callback)
+{
+  GstElement* element = gst_bin_get_by_name(GST_BIN(bin), element_name.c_str());
+  if (element) {
+    callback(bin, element);
+  } else {
+    struct _deep_element_added_closure {
+      string element_name;
+      function<void(GstBin* bin, GstElement* element)> callback;
+    };
+
+    _deep_element_added_closure *closure = new _deep_element_added_closure;
+    closure->element_name = element_name;
+    closure->callback = callback;
+
+    g_signal_connect(bin, "deep-element-added", G_CALLBACK(+[](GstBin *bin, GstBin *sub_bin, GstElement *element, gpointer user_data) -> void {
+      _deep_element_added_closure *closure = (_deep_element_added_closure *) user_data;
+      if (closure->element_name == gst_element_get_name(element)) {
+        closure->callback(bin, element);
+        g_signal_handlers_disconnect_by_data(bin, closure);
+        delete closure;
+      }
+    }), (void*)closure);
+  }
+}
+
+void wait_for_element_and_pad (GstBin* bin, string element_name, string pad_name, std::function<void(GstElement* element, GstPad* pad)> callback)
+{
+  wait_for_element(bin, element_name, [pad_name, callback](GstBin* bin, GstElement* element) {
+    wait_for_pad(element, pad_name, callback);
+  });
+}
+
+typedef function<GstPadProbeReturn(GstPad *pad, GstPadProbeInfo *info)> ProbeFunction;
+
+gulong pad_add_probe(GstPad *pad, GstPadProbeType mask, ProbeFunction callback)
+{
+  struct _closure {
+    ProbeFunction callback;
+  };
+  _closure *closure = new _closure;
+  closure->callback = callback;
+
+  return gst_pad_add_probe(pad, mask, [](GstPad *pad, GstPadProbeInfo *info, gpointer user_data) -> GstPadProbeReturn {
+    _closure *closure = (_closure*) user_data;
+    return closure->callback(pad, info);
+  }, closure, [](gpointer user_data) {
+    _closure *closure = (_closure*) user_data;
+    delete closure;
+  });
+}
+
+void hook_probe_deferred (GstBin *bin, const char* element_name, const char* pad_name, GstPadProbeType mask, ProbeFunction probe_function)
+{
+  wait_for_element_and_pad(bin, element_name, pad_name, [mask, probe_function](GstElement* element, GstPad* pad) {
+    pad_add_probe(pad, mask, probe_function);
+  });
+}
+
+
 GstPadProbeReturn
-debug_printer_probe (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
+debug_printer_probe (GstPad *pad, GstPadProbeInfo *info)
 {
   g_assert(info->type & GST_PAD_PROBE_TYPE_BUFFER);
   GstBuffer *buf = (GstBuffer*) info->data;
@@ -162,55 +248,9 @@ debug_printer_probe (GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
   return GST_PAD_PROBE_OK;
 }
 
-void _hook_debug_probe_there_is_pad(GstElement* element, GstPad* pad)
+void hook_debug_probe (GstBin *bin, const char* element_name, const char* pad_name)
 {
-  gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, debug_printer_probe, NULL, NULL);
-}
-
-void _hook_debug_probe_there_is_element(GstElement* element, const char* pad_name)
-{
-  char* disconnect_handle= new char;
-  GstPad* pad = gst_element_get_static_pad(element, pad_name);
-  if (pad) {
-    _hook_debug_probe_there_is_pad(element, pad);
-  } else {
-    g_signal_connect(element, "pad-added", G_CALLBACK(+[](GstElement *element, GstPad *new_pad, gpointer user_data) {
-      char* disconnect_handle = (char*) user_data;
-      _hook_debug_probe_there_is_pad(element, new_pad);
-      g_signal_handlers_disconnect_by_data(element, disconnect_handle);
-    }), disconnect_handle);
-  }
-}
-
-struct _hook_debug_probe_deep_element_added_closure {
-  const char* element_name;
-  const char* pad_name;
-};
-
-void hook_debug_probe (GstElement *pipeline, const char* element_name, const char* pad_name)
-{
-  GstElement* element = gst_bin_get_by_name(GST_BIN(pipeline), element_name);
-  if (element) {
-    _hook_debug_probe_there_is_element(element, pad_name);
-
-  } else {
-    _hook_debug_probe_deep_element_added_closure *closure = new _hook_debug_probe_deep_element_added_closure;
-    closure->element_name = element_name;
-    closure->pad_name = pad_name;
-
-    g_signal_connect(pipeline, "deep-element-added", G_CALLBACK(+[](GstBin     *bin,
-                     GstBin     *sub_bin,
-                     GstElement *element,
-                     gpointer    user_data)
-    {
-      _hook_debug_probe_deep_element_added_closure *closure = (_hook_debug_probe_deep_element_added_closure *) user_data;
-      if (!strcmp(closure->element_name, gst_element_get_name(element))) {
-       _hook_debug_probe_there_is_element(element, closure->pad_name);
-       delete closure;
-       g_signal_handlers_disconnect_by_data(bin, closure);
-      }
-    }), (void*)closure);
-  }
+  hook_probe_deferred(bin, element_name, pad_name, GST_PAD_PROBE_TYPE_BUFFER, debug_printer_probe);
 }
 
 guint global_group_id = -1;
@@ -228,6 +268,11 @@ GstPadProbeReturn change_group_id_probe (GstPad *pad, GstPadProbeInfo *info, gpo
   }
   return GST_PAD_PROBE_OK;
 }
+
+struct BufferBarrierProbeData {
+  guint64 pts;
+  Barrier* barrier;
+};
 
 guint64 parseUnsignedTime(const char *str)
 {
@@ -259,9 +304,6 @@ vector<GstSample*> samplesBetweenInclusive(const vector<GstSample*>& allSamples,
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  const char* tags[] = {nullptr};
-  WEBKIT_END_OF_APPEND_META_API_TYPE = gst_meta_api_type_register("WebKitEndOfAppendMetaAPI", tags);
-  webKitEndOfAppendMetaInfo = gst_meta_register(WEBKIT_END_OF_APPEND_META_API_TYPE, "WebKitEndOfAppendMeta", sizeof(EndOfAppendMeta), EndOfAppendMeta::init, EndOfAppendMeta::free, EndOfAppendMeta::transform);
 
   loop = g_main_loop_new (NULL, FALSE);
 
@@ -287,7 +329,7 @@ int main(int argc, char** argv) {
 
   GstElement* appsrcvideo = gst_bin_get_by_name(GST_BIN(pipeline), "appsrcvideo");
   GstElement* appsrcaudio = gst_bin_get_by_name(GST_BIN(pipeline), "appsrcaudio");
-//  hook_debug_probe(pipeline, "avdec_h264-0", "sink");
+//  hook_debug_probe(GST_BIN(pipeline), "avdec_h264-0", "sink");
 
   GstAppSrcCallbacks callbacks;
   callbacks.need_data = [](GstAppSrc *src, guint length, gpointer user_data) {
@@ -355,7 +397,8 @@ int main(int argc, char** argv) {
     gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
   }
 
-//  sleep(1);
+  // FIXME stalls on desktop when the following sleep is removed
+  sleep(1);
   GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "playing");
 
   // Seek
