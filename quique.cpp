@@ -17,6 +17,9 @@
 #include <string.h>
 using namespace std;
 
+GST_DEBUG_CATEGORY_STATIC(testcase_debug);
+#define GST_CAT_DEFAULT testcase_debug
+
 class Barrier {
     int m_counter;
     condition_variable m_condition;
@@ -302,8 +305,31 @@ vector<GstSample*> samplesBetweenInclusive(const vector<GstSample*>& allSamples,
   return ret;
 }
 
+GstPadProbeReturn segmentFixerProbe(GstPad*, GstPadProbeInfo* info, gpointer)
+{
+  GstEvent* event = GST_EVENT(info->data);
+
+  if (GST_EVENT_TYPE(event) != GST_EVENT_SEGMENT)
+    return GST_PAD_PROBE_OK;
+
+  GstSegment* segment = nullptr;
+  gst_event_parse_segment(event, const_cast<const GstSegment**>(&segment));
+
+//  GST_TRACE("Fixed segment base time from %" GST_TIME_FORMAT " to %" GST_TIME_FORMAT,
+//            GST_TIME_ARGS(segment->base), GST_TIME_ARGS(segment->start));
+
+  // TODO How did this work on WebKit?
+//  segment->base = segment->start;
+  segment->base = segment->start - 3600 * GST_SECOND;
+  segment->flags = static_cast<GstSegmentFlags>(0);
+
+  return GST_PAD_PROBE_REMOVE;
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
+
+  GST_DEBUG_CATEGORY_INIT (testcase_debug, "testcase", 0, "testcase log");
 
   loop = g_main_loop_new (NULL, FALSE);
 
@@ -439,6 +465,75 @@ int main(int argc, char** argv) {
     for (auto sample : samplesStartingAt(audioFrames, segment.start)) {
       gst_app_src_push_sample(GST_APP_SRC(appsrcaudio), sample);
     }
+
+    sleep(2);
+
+    g_printerr("Flush + reenqueue\n");
+
+    gint64 position = GST_CLOCK_TIME_NONE;
+    GstQuery* query = gst_query_new_position(GST_FORMAT_TIME);
+    if (gst_element_query(pipeline, query))
+        gst_query_parse_position(query, 0, &position);
+
+    GST_TRACE("Position: %" GST_TIME_FORMAT, GST_TIME_ARGS(position));
+
+    if (!GST_CLOCK_TIME_IS_VALID(position)) {
+        GST_TRACE("Can't determine position, avoiding flush");
+        abort();
+    }
+
+    double rate;
+    GstFormat format;
+    gint64 start = GST_CLOCK_TIME_NONE;
+    gint64 stop = GST_CLOCK_TIME_NONE;
+
+    gst_query_unref(query);
+    query = gst_query_new_segment(GST_FORMAT_TIME);
+    if (gst_element_query(pipeline, query))
+      gst_query_parse_segment(query, &rate, &format, &start, &stop);
+
+    GST_TRACE("segment: [%" GST_TIME_FORMAT ", %" GST_TIME_FORMAT "], rate: %f",
+      GST_TIME_ARGS(start), GST_TIME_ARGS(stop), rate);
+
+    if (!gst_element_send_event(GST_ELEMENT(appsrcvideo), gst_event_new_flush_start())) {
+      GST_ERROR("Failed to send flush-start");
+      abort();
+    }
+
+    if (!gst_element_send_event(GST_ELEMENT(appsrcvideo), gst_event_new_flush_stop(false))) {
+      GST_ERROR("Failed to send flush-stop");
+      abort();
+    }
+
+    if (static_cast<guint64>(position) == GST_CLOCK_TIME_NONE || static_cast<guint64>(start) == GST_CLOCK_TIME_NONE) {
+      GST_ERROR("position or start is NONE");
+      abort();
+    }
+
+    GstSegment* segment(gst_segment_new());
+    gst_segment_init(segment, GST_FORMAT_TIME);
+    gst_segment_do_seek(segment, rate, GST_FORMAT_TIME, GST_SEEK_FLAG_NONE,
+      GST_SEEK_TYPE_SET, position, GST_SEEK_TYPE_SET, stop, nullptr);
+
+    GstPad* appsrcvideoSrc = gst_element_get_static_pad(appsrcvideo, "src");
+    GstPad* appsrcvideoSrcPeer = gst_pad_get_peer(appsrcvideoSrc);
+    gst_pad_add_probe(appsrcvideoSrcPeer, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, segmentFixerProbe, NULL, NULL);
+
+    GST_TRACE("Sending new seamless segment: [%" GST_TIME_FORMAT ", %" GST_TIME_FORMAT "], rate: %f",
+        GST_TIME_ARGS(segment->start), GST_TIME_ARGS(segment->stop), segment->rate);
+
+    if (!gst_base_src_new_seamless_segment(GST_BASE_SRC(appsrcvideo), segment->start, segment->stop, segment->start)) {
+        GST_WARNING("Failed to send seamless segment event");
+        abort();
+    }
+
+    GST_DEBUG("flushed video, reenqueueing new frames");
+
+    for (auto sample : samplesStartingAt(videoFrames, segment->start)) {
+      gst_app_src_push_sample(GST_APP_SRC(appsrcvideo), sample);
+    }
+
+    GST_DEBUG("reenqueued new frames");
 
     sleep(40);
   }
